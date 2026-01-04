@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>IVASMS Monitor — Automation Bot</title>
+  <style>
+    :root{font-family:system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;line-height:1.4}
+    body{margin:0;padding:16px;background:#0f1720;color:#e6eef8}
+    .card{background:#0b1220;border-radius:10px;padding:16px;box-shadow:0 4px 18px rgba(2,6,23,.6)}
+    h1{margin:0 0 8px;font-size:18px}
+    p{margin:4px 0 12px;color:#9fb2cc}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    button{appearance:none;border:0;padding:10px 14px;border-radius:8px;background:#1f6feb;color:white;font-weight:600}
+    button.secondary{background:#334155}
+    #status{margin-top:12px;color:#cbdaf1}
+    .list{margin-top:12px;max-height:220px;overflow:auto;padding:8px;background:#07111a;border-radius:8px}
+    .item{padding:8px;border-bottom:1px solid rgba(255,255,255,.03);font-size:13px}
+    .small{font-size:12px;color:#90a7c4}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#072b14;color:#9bf0b7;font-weight:700;margin-left:8px}
+    .config{margin-top:12px;color:#9fb2cc;font-size:13px}
+    a.link{color:#7dd3fc}
+    footer{margin-top:14px;font-size:12px;color:#7b8fa6}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>IVASMS Portal Monitor (Kiwi / Mobile)</h1>
+    <p>مراقب الجدول في https://ivasms.com/portal — يلتقط (Country, Phone, Code) ويُرسل إلى Telegram. احذر: تضمين توكن البوت داخل صفحة عامة خطر أمني.</p>
+
+    <div class="controls">
+      <button id="startBtn">Start</button>
+      <button id="stopBtn" class="secondary" disabled>Stop</button>
+      <button id="playTest" class="secondary">Test Sounds</button>
+    </div>
+
+    <div id="status" class="small">Status: <span id="statusText">Idle</span></div>
+
+    <div class="config small">
+      Poll every <span id="intervalLabel">10</span>s • Proxies: fallback list used to bypass CORS.
+      <div class="small" style="margin-top:6px">Last activity:</div>
+    </div>
+
+    <div class="list" id="log"></div>
+
+    <footer>
+      تحذير أمني: توكن البوت ظاهِر في الكود — إذا أردت أَمنًا أفضل ضع جزء الإرسال في سيرفر (Cloudflare Worker أو GitHub Actions أو أي endpoint آمن).
+    </footer>
+  </div>
+
+  <script>
+  (function () {
+    // ========== CONFIG ==========
+    const TARGET_URL = 'https://ivasms.com/portal';
+    // Telegram credentials provided by user (included here because requested).
+    // WARNING: embedding tokens in client-side files is insecure; server-side proxy is recommended.
+    const TELEGRAM_BOT_TOKEN = '8109361019:AAFnrD44Yek8qlvBvWvGDLWBWtpOCAOp8yc';
+    const TELEGRAM_CHAT_ID = '-1003005165528';
+
+    // Poll interval (random between MIN and MAX seconds to reduce detection)
+    const MIN_INTERVAL = 10; // seconds
+    const MAX_INTERVAL = 20; // seconds
+
+    // CORS proxy fallbacks (order: prefer reliable ones first)
+    const CORS_PROXIES = [
+      // some proxies require additional activation or may be rate-limited;
+      // the script will try them in order until one returns content.
+      'https://api.allorigins.win/raw?url={url}',
+      'https://thingproxy.freeboard.io/fetch/{url}',
+      'https://api.allorigins.cf/raw?url={url}',
+      // If you have your own proxy, put it here:
+      // 'https://your-proxy.example/fetch?url={url}'
+    ];
+
+    // storage keys
+    const SENT_IDS_KEY = 'ivasms_sent_ids_v1';
+    const PENDING_KEY = 'ivasms_pending_v1';
+
+    // ========== UI ==========
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const playTest = document.getElementById('playTest');
+    const statusText = document.getElementById('statusText');
+    const logEl = document.getElementById('log');
+    const intervalLabel = document.getElementById('intervalLabel');
+
+    let running = false;
+    let timer = null;
+
+    // ========== Utility ==========
+    function log(msg, level = 'info') {
+      const el = document.createElement('div');
+      el.className = 'item';
+      el.innerHTML = `<div>${new Date().toLocaleTimeString()} — ${escapeHtml(msg)}</div>`;
+      logEl.prepend(el);
+    }
+    function escapeHtml(s){ return String(s).replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+    function randInt(min, max){ return Math.floor(Math.random()*(max-min+1))+min; }
+    function getIntervalSeconds(){ return randInt(MIN_INTERVAL, MAX_INTERVAL); }
+
+    function loadJSON(key, fallback){
+      try { return JSON.parse(localStorage.getItem(key) || 'null') || fallback; } catch(e){ return fallback; }
+    }
+    function saveJSON(key, val){ localStorage.setItem(key, JSON.stringify(val)); }
+
+    // sentIds as a Set for quick checks
+    let sentIds = new Set(loadJSON(SENT_IDS_KEY, []));
+    let pending = loadJSON(PENDING_KEY, []); // array of payloads to retry
+
+    // ========== Audio (WebAudio) ==========
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    let audioCtx = null;
+    function ensureAudio() { if(!audioCtx) audioCtx = new AudioCtx(); }
+    function beep(freq = 800, dur = 0.15, when = 0) {
+      try {
+        ensureAudio();
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'sine';
+        o.frequency.value = freq;
+        g.gain.value = 0.12;
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start(audioCtx.currentTime + when);
+        o.stop(audioCtx.currentTime + when + dur);
+      } catch(e){ /* audio blocked */ }
+    }
+    function successMelody() {
+      // short ascending melody
+      const notes = [600, 750, 900, 1100];
+      let t = 0;
+      for (let n of notes) {
+        beep(n, 0.12, t);
+        t += 0.12;
+      }
+    }
+
+    // ========== Fetch helpers with CORS fallback ==========
+    async function fetchWithProxies(url, options = {}) {
+      // Try direct first (might be blocked by CORS)
+      try {
+        const res = await fetch(url, options);
+        if (res && res.ok) return res;
+        // If not ok, continue to proxies
+      } catch (e) {
+        // console.warn('Direct fetch failed:', e);
+      }
+
+      // Try proxies in order
+      for (const proxyTemplate of CORS_PROXIES) {
+        const proxied = proxyTemplate.replace('{url}', encodeURIComponent(url));
+        try {
+          const res = await fetch(proxied, options);
+          if (res && res.ok) return res;
+        } catch (e) {
+          // continue to next proxy
+        }
+      }
+      throw new Error('All fetch attempts failed (CORS / network).');
+    }
+
+    // ========== Parse portal HTML and extract rows ==========
+    function extractRowsFromHTML(htmlText) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(htmlText, 'text/html');
+      const tables = doc.querySelectorAll('table');
+      if (!tables || tables.length === 0) return [];
+      // Heuristic: pick the biggest table (most rows)
+      let bestTable = null, bestRows = 0;
+      tables.forEach(t => {
+        const rows = t.querySelectorAll('tr').length;
+        if (rows > bestRows) { bestRows = rows; bestTable = t; }
+      });
+      if (!bestTable) return [];
+      const rows = Array.from(bestTable.querySelectorAll('tr'));
+      const result = [];
+      for (const r of rows) {
+        const cells = Array.from(r.querySelectorAll('td'));
+        if (cells.length < 2) continue; // likely header or not data
+        const phone = (cells[0].textContent || '').trim();
+        const service = (cells[1].textContent || '').trim();
+        const code = (cells[cells.length-1].textContent || '').trim();
+        const country = (cells[2] && cells[2].textContent) ? cells[2].textContent.trim() : '';
+        // perform further cleanup
+        if (!phone) continue;
+        result.push({ phone, service, code, country, rawCells: cells.map(c => c.textContent.trim()) });
+      }
+      return result;
+    }
+
+    // ========== Telegram sending ==========
+    async function sendToTelegram(payload, useKeepAlive = false) {
+      const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+      const text = `IVASMS\nCountry: ${payload.country || '-'}\nPhone: ${payload.phone}\nCode: ${payload.code}\nSource: ${TARGET_URL}`;
+      const body = {
+        chat_id: TELEGRAM_CHAT_ID,
+        text,
+        parse_mode: 'HTML'
+      };
+      const fetchOpts = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      };
+      if (useKeepAlive) fetchOpts.keepalive = true;
+      try {
+        const res = await fetch(url, fetchOpts);
+        if (!res.ok) throw new Error('Telegram responded with ' + res.status);
+        const data = await res.json();
+        if (!data.ok) throw new Error('Telegram API error: ' + (data.description || 'unknown'));
+        return data;
+      } catch (err) {
+        throw err;
+      }
+    }
+
+    // Attempts to send, and on failure push to pending
+    async function trySendPayload(payload, beforeUnload = false) {
+      const id = `${payload.phone}|${payload.code}`;
+      try {
+        // If beforeUnload, use keepalive
+        await sendToTelegram(payload, beforeUnload);
+        // success
+        sentIds.add(id);
+        saveJSON(SENT_IDS_KEY, Array.from(sentIds));
+        successMelody();
+        log(`Sent: ${payload.phone} — ${payload.code}`);
+        // remove any matching pending entries
+        pending = pending.filter(p => !(p.phone === payload.phone && p.code === payload.code));
+        saveJSON(PENDING_KEY, pending);
+        return true;
+      } catch (err) {
+        // queue for retry
+        pending.push(payload);
+        saveJSON(PENDING_KEY, pending);
+        log(`Failed to send (queued): ${payload.phone} — ${payload.code} — ${err.message}`);
+        return false;
+      }
+    }
+
+    // flush pending queue
+    async function flushPending() {
+      if (!pending.length) return;
+      log(`Retrying ${pending.length} pending messages...`);
+      const copy = pending.slice();
+      pending = [];
+      saveJSON(PENDING_KEY, pending);
+      for (const p of copy) {
+        // try to send each; if fails, push back to pending
+        try {
+          await sendToTelegram(p);
+          const id = `${p.phone}|${p.code}`;
+          sentIds.add(id);
+        } catch (e) {
+          pending.push(p);
+        }
+      }
+      saveJSON(PENDING_KEY, pending);
+      saveJSON(SENT_IDS_KEY, Array.from(sentIds));
+    }
+
+    // ========== Core scan logic ==========
+    let lastScanTime = 0;
+    async function scanPortalOnce() {
+      statusText.textContent = 'Scanning...';
+      try {
+        const res = await fetchWithProxies(TARGET_URL, { cache: 'no-store' });
+        const text = await res.text();
+        lastScanTime = Date.now();
+        statusText.textContent = `Last fetched ${new Date(lastScanTime).toLocaleTimeString()}`;
+        const rows = extractRowsFromHTML(text);
+        if (!rows.length) {
+          log('No rows found in fetched HTML (table not detected).');
+          return;
+        }
+        // check rows
+        for (const row of rows) {
+          // only watch Service == WhatsApp (case-insensitive contains)
+          if (!/whatsapp/i.test(row.service)) continue;
+          if (!row.code) continue;
+          const id = `${row.phone}|${row.code}`;
+          if (sentIds.has(id)) continue; // already sent
+          // New code found
+          beep(900, 0.12);
+          log(`New detected: ${row.phone} — ${row.code}`);
+          // Attempt immediate send
+          await trySendPayload({ phone: row.phone, code: row.code, country: row.country });
+        }
+        // After scanning, try flush pending as well
+        await flushPending();
+      } catch (err) {
+        statusText.textContent = 'Fetch error';
+        log(`Fetch error: ${err.message}`);
+      }
+    }
+
+    // loop starter
+    function startLoop() {
+      if (running) return;
+      running = true;
+      startBtn.disabled = true; stopBtn.disabled = false;
+      statusText.textContent = 'Starting...';
+      // immediate scan
+      (async () => {
+        await scanPortalOnce();
+        scheduleNext();
+      })();
+    }
+
+    function scheduleNext() {
+      if (!running) return;
+      const secs = getIntervalSeconds();
+      intervalLabel.textContent = secs;
+      timer = setTimeout(async () => {
+        await scanPortalOnce();
+        scheduleNext();
+      }, secs * 1000);
+      statusText.textContent = `Next in ${secs}s`;
+    }
+
+    function stopLoop() {
+      running = false;
+      startBtn.disabled = false; stopBtn.disabled = true;
+      statusText.textContent = 'Stopped';
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+
+    // ========== lifecycle / unload handling ==========
+    // Try to send pending messages during page unload using keepalive
+    window.addEventListener('beforeunload', (e) => {
+      if (pending.length === 0) return;
+      // Try to send all pending with keepalive (best-effort)
+      for (const p of pending) {
+        try {
+          // fire-and-forget
+          sendToTelegram(p, true).catch(()=>{/*ignore*/});
+        } catch(e){}
+      }
+      // no synchronous blocking; it's best-effort
+    });
+
+    // Also attempt to flush when tab becomes visible again
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        flushPending().catch(()=>{});
+      }
+    });
+
+    // ========== UI wiring ==========
+    startBtn.addEventListener('click', () => {
+      // need user gesture to enable audio context on some mobile browsers
+      try { ensureAudio(); if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); } catch(e){}
+      startLoop();
+    });
+    stopBtn.addEventListener('click', stopLoop);
+    playTest.addEventListener('click', () => { beep(880,0.12); setTimeout(()=>beep(1100,0.12),160); successMelody(); });
+
+    // Initialize log with existing pending/sent summary
+    (function init() {
+      log(`Initialized. Sent IDs stored: ${sentIds.size}. Pending queued: ${pending.length}.`);
+      if (pending.length) log(`Pending example: ${JSON.stringify(pending[0])}`);
+    })();
+
+    // Auto-start if desired (disabled by default for safety in pages)
+    // startLoop();
+
+    // Expose a few functions for debugging in console
+    window.ivasmsMonitor = {
+      scanOnce: scanPortalOnce,
+      flushPending,
+      getState: () => ({ running, sentCount: sentIds.size, pendingCount: pending.length }),
+      stop: stopLoop,
+      start: startLoop
+    };
+
+  })();
+  </script>
+</body>
+</html>
