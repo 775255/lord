@@ -94,7 +94,7 @@
       el.innerHTML = `<div>${new Date().toLocaleTimeString()} — ${escapeHtml(msg)}</div>`;
       logEl.prepend(el);
     }
-    function escapeHtml(s){ return String(s).replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+    function escapeHtml(s){ return String(s).replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])); }
 
     function randInt(min, max){ return Math.floor(Math.random()*(max-min+1))+min; }
     function getIntervalSeconds(){ return randInt(MIN_INTERVAL, MAX_INTERVAL); }
