@@ -1,89 +1,76 @@
 <!doctype html>
 <html lang="ar">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>IVASMS Monitor — Fix Active</title>
-  <style>
-    :root{font-family:system-ui,Segoe UI,Roboto;line-height:1.4}
-    body{margin:0;padding:16px;background:#0f1720;color:#e6eef8}
-    .card{background:#0b1220;border-radius:10px;padding:16px;box-shadow:0 4px 18px rgba(2,6,23,.6)}
-    h1{margin:0 0 8px;font-size:18px;color:#7dd3fc}
-    .controls{display:flex;gap:8px;margin-bottom:15px}
-    button{border:0;padding:10px 14px;border-radius:8px;background:#1f6feb;color:white;font-weight:600;cursor:pointer}
-    #status{margin-top:10px;font-size:12px;color:#9fb2cc}
-    .list{margin-top:12px;max-height:300px;overflow:auto;background:#07111a;border-radius:8px;padding:10px}
-    .item{padding:8px;border-bottom:1px solid rgba(255,255,255,.05);font-size:13px}
-    .success{color:#4ade80}
-    .error{color:#f87171}
-  </style>
+    <meta charset="utf-8">
+    <title>IVASMS Fixed Bot</title>
+    <style>
+        body{background:#0b0f19;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
+        .status{padding:15px;border-radius:10px;margin:10px;background:#161b22;border:1px solid #30363d}
+        #log{text-align:left;max-height:300px;overflow:auto;background:#000;padding:10px;font-size:12px}
+        .green{color:#238636} .red{color:#da3633}
+    </style>
 </head>
 <body>
-  <div class="card">
-    <h1>IVASMS Monitor (Fix 2026)</h1>
-    <div class="controls">
-      <button id="startBtn">Start Now</button>
-      <button id="stopBtn" style="background:#334155">Stop</button>
-    </div>
-    <div id="status">Status: <span id="statusText" class="success">Ready</span></div>
-    <div class="list" id="log"></div>
-  </div>
+    <h2>IVASMS Monitor 2026</h2>
+    <div class="status">الحالة: <span id="st">Ready</span></div>
+    <button onclick="start()" style="padding:10px 20px;background:#238636;color:#fff;border:0;border-radius:5px">Start Bot</button>
+    <div id="log"></div>
 
-  <script>
-  (function () {
-    const TARGET_URL = 'https://ivasms.com/portal';
-    const TELEGRAM_BOT_TOKEN = '8109361019:AAFnrD44Yek8qlvBvWvGDLWBWtpOCAOp8yc';
-    const TELEGRAM_CHAT_ID = '-1003005165528';
+<script>
+const TELE_TOKEN = '8109361019:AAFnrD44Yek8qlvBvWvGDLWBWtpOCAOp8yc';
+const CHAT_ID = '-1003005165528';
+let seen = new Set();
 
-    // قائمة بروكسيات محدثة لتجاوز CORS
-    const CORS_PROXIES = [
-      'https://api.allorigins.win/raw?url={url}',
-      'https://corsproxy.io/?{url}',
-      'https://thingproxy.freeboard.io/fetch/{url}'
-    ];
+async function send(msg) {
+    await fetch(`https://api.telegram.org/bot${TELE_TOKEN}/sendMessage?chat_id=${CHAT_ID}&text=${encodeURIComponent(msg)}`);
+}
 
-    let running = false;
-    let sentIds = new Set();
-    const logEl = document.getElementById('log');
-
-    function log(msg, isError = false) {
-      const div = document.createElement('div');
-      div.className = 'item' + (isError ? ' error' : '');
-      div.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}`;
-      logEl.prepend(div);
-    }
-
-    async function fetchWithFallback() {
-      for (let proxy of CORS_PROXIES) {
-        try {
-          const url = proxy.replace('{url}', encodeURIComponent(TARGET_URL));
-          const res = await fetch(url);
-          if (res.ok) return await res.text();
-        } catch (e) {}
-      }
-      throw new Error("All proxies failed");
-    }
-
-    async function sendTelegram(phone, code, service) {
-      const text = `📬 New Code Found!\n📱 Phone: ${phone}\n🔑 Code: ${code}\n🛠 Service: ${service}`;
-      try {
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({chat_id: TELEGRAM_CHAT_ID, text: text})
-        });
-        return true;
-      } catch (e) { return false; }
-    }
-
-    async function scan() {
-      if (!running) return;
-      document.getElementById('statusText').textContent = 'Scanning...';
-      try {
-        const html = await fetchWithFallback();
+async function check() {
+    document.getElementById('st').innerHTML = "Scanning...";
+    // استخدام بروكسي أكثر استقراراً
+    const url = "https://api.allorigins.win/get?url=" + encodeURIComponent("https://ivasms.com/portal");
+    
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+        const html = data.contents;
+        
         const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-        const rows = doc.querySelectorAll('tr');
+        const doc = parser.parseFromString(html, "text/html");
+        const rows = doc.querySelectorAll("tr");
+
+        rows.forEach(row => {
+            const cells = row.querySelectorAll("td");
+            if (cells.length > 3) {
+                const phone = cells[0].innerText.trim();
+                const service = cells[1].innerText.trim();
+                const code = cells[cells.length - 1].innerText.trim();
+                
+                if (code && code.length > 1) {
+                    const id = phone + code;
+                    if (!seen.has(id)) {
+                        seen.add(id);
+                        send(`✅ كود جديد!\nالخدمة: ${service}\nالرقم: ${phone}\nالكود: ${code}`);
+                        const div = document.createElement('div');
+                        div.innerHTML = `<span class="green">Sent: ${phone} - ${code}</span>`;
+                        document.getElementById('log').prepend(div);
+                    }
+                }
+            }
+        });
+        document.getElementById('st').innerHTML = "Waiting for new codes...";
+    } catch (e) {
+        document.getElementById('st').innerHTML = "<span class='red'>Connection Error - Retrying...</span>";
+    }
+}
+
+function start() {
+    setInterval(check, 10000);
+    check();
+}
+</script>
+</body>
+</html>
         
         let foundNew = false;
         rows.forEach(row => {
