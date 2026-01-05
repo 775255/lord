@@ -2,38 +2,81 @@
 <html lang="ar">
 <head>
     <meta charset="utf-8">
-    <title>IVASMS Fixed Bot</title>
+    <title>FINAL FIX - IVASMS</title>
     <style>
-        body{background:#0b0f19;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
-        .status{padding:15px;border-radius:10px;margin:10px;background:#161b22;border:1px solid #30363d}
-        #log{text-align:left;max-height:300px;overflow:auto;background:#000;padding:10px;font-size:12px}
-        .green{color:#238636} .red{color:#da3633}
+        body{background:#0d1117;color:#c9d1d9;font-family:sans-serif;text-align:center;padding:20px}
+        .card{background:#161b22;border:1px solid #30363d;padding:20px;border-radius:10px}
+        #log{text-align:left;background:#000;padding:10px;margin-top:20px;height:200px;overflow:auto;font-size:11px}
+        button{background:#238636;color:white;border:0;padding:12px 24px;border-radius:6px;cursor:pointer;font-weight:bold}
     </style>
 </head>
 <body>
-    <h2>IVASMS Monitor 2026</h2>
-    <div class="status">الحالة: <span id="st">Ready</span></div>
-    <button onclick="start()" style="padding:10px 20px;background:#238636;color:#fff;border:0;border-radius:5px">Start Bot</button>
-    <div id="log"></div>
+    <div class="card">
+        <h2>IVASMS Monitor - Ultimate Fix</h2>
+        <p id="st">Status: Ready</p>
+        <button onclick="start()">START MONITORING</button>
+        <div id="log"></div>
+    </div>
 
 <script>
-const TELE_TOKEN = '8109361019:AAFnrD44Yek8qlvBvWvGDLWBWtpOCAOp8yc';
+const BOT_TOKEN = '8109361019:AAFnrD44Yek8qlvBvWvGDLWBWtpOCAOp8yc';
 const CHAT_ID = '-1003005165528';
 let seen = new Set();
 
-async function send(msg) {
-    await fetch(`https://api.telegram.org/bot${TELE_TOKEN}/sendMessage?chat_id=${CHAT_ID}&text=${encodeURIComponent(msg)}`);
+async function sendTele(text) {
+    try {
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({chat_id: CHAT_ID, text: text})
+        });
+    } catch(e) {}
 }
 
 async function check() {
-    document.getElementById('st').innerHTML = "Scanning...";
-    // استخدام بروكسي أكثر استقراراً
-    const url = "https://api.allorigins.win/get?url=" + encodeURIComponent("https://ivasms.com/portal");
+    document.getElementById('st').innerText = "Scanning...";
+    // استخدام بروكسي "cors-anywhere" العام كبديل أخير
+    const proxyUrl = "https://cors-anywhere.herokuapp.com/";
+    const targetUrl = "https://ivasms.com/portal";
     
     try {
-        const response = await fetch(url);
-        const data = await response.json();
-        const html = data.contents;
+        const res = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(targetUrl));
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const rows = doc.querySelectorAll("tr");
+
+        rows.forEach(row => {
+            const cells = row.querySelectorAll("td");
+            if (cells.length >= 2) {
+                const phone = cells[0].innerText.trim();
+                const code = cells[cells.length - 1].innerText.trim();
+                const service = cells[1].innerText.trim();
+
+                if (code && code.length > 1) {
+                    const id = phone + code;
+                    if (!seen.has(id)) {
+                        seen.add(id);
+                        sendTele(`🚀 كود جديد!\nالخدمة: ${service}\nالرقم: ${phone}\nالكود: ${code}`);
+                        const item = document.createElement('div');
+                        item.innerHTML = `<span style="color:#4ade80">✅ Sent: ${phone}</span>`;
+                        document.getElementById('log').prepend(item);
+                    }
+                }
+            }
+        });
+        document.getElementById('st').innerText = "Waiting...";
+    } catch (e) {
+        document.getElementById('st').innerText = "Retry in 10s...";
+    }
+}
+
+function start() {
+    setInterval(check, 10000);
+    check();
+}
+</script>
+</body>
+</html>
         
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, "text/html");
